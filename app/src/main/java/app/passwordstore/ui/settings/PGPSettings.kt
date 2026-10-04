@@ -9,6 +9,7 @@ import android.content.Intent
 import androidx.fragment.app.FragmentActivity
 import app.passwordstore.R
 import app.passwordstore.ui.pgp.PGPKeyListActivity
+import app.passwordstore.util.crypto.OpenKeychainClient
 import app.passwordstore.util.settings.PreferenceKeys
 import de.Maxr1998.modernpreferences.PreferenceScreen
 import de.Maxr1998.modernpreferences.helpers.onClick
@@ -33,6 +34,19 @@ class PGPSettings(private val activity: FragmentActivity) : SettingsProvider {
       switch(PreferenceKeys.ASCII_ARMOR) {
         titleRes = R.string.pref_pgp_ascii_armor_title
         persistent = true
+      }
+      switch(PreferenceKeys.USE_OPENKEYCHAIN) {
+        titleRes = R.string.pref_use_openkeychain_title
+        summaryRes = R.string.pref_use_openkeychain_summary
+        persistent = true
+        defaultValue = false
+        onClick {
+          if (checked && !OpenKeychainClient.isInstalled(activity)) {
+            checked = false
+            OpenKeychainClient.showInstallDialog(activity)
+          }
+          false
+        }
       }
     }
   }

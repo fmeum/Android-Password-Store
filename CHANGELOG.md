@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file
 
 ## [Unreleased]
 
+### Added
+
+- OpenKeychain can be used as the PGP backend ("Use OpenKeychain" in the PGP settings), which brings back support for hardware tokens such as YubiKeys
+
 ## [2.0.3] - 2026-10-02
 
 ### Added

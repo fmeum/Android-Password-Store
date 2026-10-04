@@ -34,6 +34,10 @@ import app.passwordstore.util.auth.BiometricAuthenticator.Result as BiometricRes
 import app.passwordstore.util.coroutines.DispatcherProvider
 import app.passwordstore.util.crypto.AESEncryption
 import app.passwordstore.util.crypto.AESEncryption.KeyType
+import app.passwordstore.util.crypto.OpenKeychainCancelledException
+import app.passwordstore.util.crypto.OpenKeychainClient
+import app.passwordstore.util.crypto.OpenKeychainException
+import app.passwordstore.util.crypto.OpenKeychainNotInstalledException
 import app.passwordstore.util.extensions.b64Decode
 import app.passwordstore.util.extensions.clipboard
 import app.passwordstore.util.extensions.commitChange
@@ -46,11 +50,15 @@ import app.passwordstore.util.extensions.wipe
 import app.passwordstore.util.passkey.PasskeyCredential
 import app.passwordstore.util.settings.Constants
 import app.passwordstore.util.settings.PreferenceKeys
+import com.github.michaelbull.result.Result
 import com.github.michaelbull.result.get
 import com.github.michaelbull.result.onErr
+import com.github.michaelbull.result.onOk
 import com.github.michaelbull.result.runCatching
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dagger.hilt.android.AndroidEntryPoint
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.CharBuffer
 import java.time.Instant
@@ -123,34 +131,31 @@ open class BasePGPActivity : AppCompatActivity() {
           data.getStringExtra(PGPKeyListActivity.EXTRA_SELECTED_KEY)
             ?: return@registerForActivityResult
 
-        val repoRoot = PasswordRepository.getRepositoryDirectory()
         val subPath = data.getStringExtra("SUB_PATH") ?: return@registerForActivityResult
-
-        val gpgIdDir =
-          File(repoRoot, subPath)
-            .let {
-              if (it.isFile() || !it.exists()) it.getParentFile() else it.getAbsoluteFile()
-            }
-            .also {
-              if (!it.exists()) it.mkdirs() // should not be necessary
-            }
-
-        File(gpgIdDir, ".gpg-id")?.let {
-          it.writeText(selectedKeyId + "\n")
-          runBlocking {
-            commitChange(
-              getString(
-                R.string.git_commit_gpg_id,
-                getString(R.string.app_name),
-              )
-            )
-          }
-          onKeyListCallback?.invoke()
-        } ?: return@registerForActivityResult
+        writeGpgIdFile(subPath, selectedKeyId)
+        onKeyListCallback?.invoke()
       } else {
         finish()
       }
     }
+
+  /**
+   * Writes [identifiers] (one per line) to the `.gpg-id` file of the directory given by [subPath],
+   * relative to the repository root, and commits the change.
+   */
+  private fun writeGpgIdFile(subPath: String, identifiers: String) {
+    val repoRoot = PasswordRepository.getRepositoryDirectory()
+    val gpgIdDir =
+      File(repoRoot, subPath)
+        .let { if (it.isFile() || !it.exists()) it.getParentFile() else it.getAbsoluteFile() }
+        .also {
+          if (!it.exists()) it.mkdirs() // should not be necessary
+        }
+    File(gpgIdDir, ".gpg-id").writeText(identifiers.trimEnd() + "\n")
+    runBlocking {
+      commitChange(getString(R.string.git_commit_gpg_id, getString(R.string.app_name)))
+    }
+  }
 
   /** [SharedPreferences] instance used by subclasses to persist settings */
   @SettingsPreferences @Inject lateinit var settings: SharedPreferences
@@ -164,6 +169,17 @@ open class BasePGPActivity : AppCompatActivity() {
 
   @Inject lateinit var repository: CryptoRepository
   @Inject lateinit var dispatcherProvider: DispatcherProvider
+
+  /**
+   * Whether PGP operations are delegated to OpenKeychain rather than performed by the built-in
+   * PGPainless backend. OpenKeychain manages keys, passphrases and hardware tokens (e.g. YubiKeys)
+   * itself, so the app's key manager and passphrase caches are bypassed in this mode.
+   */
+  protected val useOpenKeychain: Boolean
+    get() = settings.getBoolean(PreferenceKeys.USE_OPENKEYCHAIN, false)
+
+  /** Client for OpenKeychain's OpenPGP API, only used when [useOpenKeychain] is `true`. */
+  protected val openKeychain = OpenKeychainClient(this) { dispatcherProvider }
 
   /**
    * [onCreate] sets the window up with the right flags to prevent auth leaks through screenshots or
@@ -210,6 +226,12 @@ open class BasePGPActivity : AppCompatActivity() {
    */
   protected fun requireKeysExist(onKeysExist: () -> Unit) {
     onKeyListCallback = onKeysExist
+    if (useOpenKeychain) {
+      // Keys live in OpenKeychain; all we need is for it to be installed.
+      if (OpenKeychainClient.isInstalled(this)) onKeysExist()
+      else OpenKeychainClient.showInstallDialog(this) { finish() }
+      return
+    }
     lifecycleScope.launch {
       val hasKeys = repository.hasKeys()
       if (!hasKeys) {
@@ -227,29 +249,158 @@ open class BasePGPActivity : AppCompatActivity() {
     }
   }
 
+  /**
+   * Shown when [subDir] has no usable `.gpg-id` ([ids] is `null` if the file is missing, empty if
+   * it holds no valid identifiers). Lets the user pick keys, in the app's key manager or in
+   * OpenKeychain depending on [useOpenKeychain], and writes them to a new `.gpg-id` before invoking
+   * [onKeyListCallback].
+   */
+  private fun promptForGpgIdInitialisation(subDir: String, ids: List<PGPIdentifier>?) {
+    val title =
+      if (ids == null) getString(R.string.missing_gpg_id_dialog_title)
+      else getString(R.string.invalid_gpg_id_dialog_title)
+    if (useOpenKeychain) {
+      val message =
+        if (ids == null) getString(R.string.missing_gpg_id_dialog_message_openkeychain)
+        else getString(R.string.invalid_gpg_id_dialog_message_openkeychain)
+      MaterialAlertDialogBuilder(this)
+        .setIcon(R.drawable.ic_warning_red_24dp)
+        .setTitle(title)
+        .setMessage(message)
+        .setCancelable(false)
+        .setPositiveButton(R.string.openkeychain_select_keys) { _, _ ->
+          selectOpenKeychainKeys(subDir)
+        }
+        .setNegativeButton(R.string.dialog_cancel) { _, _ -> finish() }
+        .show()
+    } else {
+      val message =
+        if (ids == null) getString(R.string.missing_gpg_id_dialog_message)
+        else getString(R.string.invalid_gpg_id_dialog_message)
+      openKeyManagerDialog(title, message) {
+        val intent = PGPKeyListActivity.newIntent(this@BasePGPActivity, keySelection = true)
+        intent.putExtra("SUB_PATH", subDir)
+        keySelectAction.launch(intent)
+      }
+    }
+  }
+
+  /** Lets the user pick keys in OpenKeychain and initialises `.gpg-id` in [subDir] with them. */
+  private fun selectOpenKeychainKeys(subDir: String) {
+    lifecycleScope.launch(dispatcherProvider.main()) {
+      openKeychain
+        .selectKeyIds()
+        .onOk { keyIds ->
+          if (keyIds.isEmpty()) {
+            snackbar(message = getString(R.string.openkeychain_no_keys_selected))
+            finish()
+          } else {
+            val identifiers = keyIds.joinToString("\n") { PGPIdentifier.KeyId(it).toString() }
+            writeGpgIdFile(subDir, identifiers)
+            onKeyListCallback?.invoke()
+          }
+        }
+        .onErr { e ->
+          handleOpenKeychainError(e)
+          finish()
+        }
+    }
+  }
+
+  /**
+   * Reports [error] to the user if it is an [OpenKeychainException] and returns `true` in that
+   * case. A cancellation is reported silently since the user triggered it themselves.
+   */
+  protected fun handleOpenKeychainError(error: Throwable?): Boolean {
+    when (error) {
+      is OpenKeychainCancelledException -> {}
+      is OpenKeychainNotInstalledException -> OpenKeychainClient.showInstallDialog(this)
+      is OpenKeychainException ->
+        snackbar(message = getString(R.string.openkeychain_error, error.message ?: ""))
+      else -> return false
+    }
+    return true
+  }
+
+  /**
+   * Decrypts [message] into [outputStream], delegating to OpenKeychain when [useOpenKeychain] is
+   * set and to [CryptoRepository.decrypt] with the given [passphrases] otherwise. The result has
+   * the same shape as [CryptoRepository.decrypt]: a list of (PGP ID, result) pairs whose last entry
+   * is the outcome to act on.
+   */
+  protected suspend fun decryptMessage(
+    passphrases: Map<String, CharArray?>,
+    identifiers: List<PGPIdentifier>,
+    message: ByteArrayInputStream,
+    outputStream: ByteArrayOutputStream,
+  ): List<Pair<String, Result<ByteArrayOutputStream, Throwable>>> {
+    if (useOpenKeychain) {
+      val result = openKeychain.decrypt({ message.also { it.reset() } }, outputStream)
+      result.onErr { e -> logcat { e.asLog() } }
+      return listOf((identifiers.firstOrNull()?.toString() ?: "") to result)
+    }
+    return repository.decrypt(passphrases, identifiers, message, outputStream)
+  }
+
+  /**
+   * Encrypts [message] into [encryptedMessage] for [identifiers], delegating to OpenKeychain when
+   * [useOpenKeychain] is set and to [CryptoRepository.encrypt] otherwise. Returns the recipients
+   * the message was encrypted for alongside the result, like [CryptoRepository.encrypt] does.
+   */
+  protected suspend fun encryptMessage(
+    identifiers: List<PGPIdentifier>,
+    message: ByteArrayInputStream,
+    encryptedMessage: ByteArrayOutputStream,
+  ): Pair<List<String>?, Result<ByteArrayOutputStream, Throwable>> {
+    if (useOpenKeychain) {
+      val result =
+        openKeychain.encrypt(
+          identifiers,
+          settings.getBoolean(PreferenceKeys.ASCII_ARMOR, false),
+          { message.also { it.reset() } },
+          encryptedMessage,
+        )
+      result.onErr { e -> logcat { e.asLog() } }
+      return identifiers.map { it.toString() }.distinct() to result
+    }
+    return withContext(dispatcherProvider.io()) {
+      repository.encrypt(identifiers, message, encryptedMessage)
+    }
+  }
+
+  /**
+   * Describes the recipients from [identifiers] that are not part of [succeededRecipients], i.e.
+   * those a message could not be encrypted for. Always empty when OpenKeychain is used, since it
+   * either encrypts for every requested key or fails as a whole.
+   */
+  protected fun getFailedRecipients(
+    identifiers: List<PGPIdentifier>,
+    succeededRecipients: List<String>?,
+  ): List<String> {
+    if (useOpenKeychain) return emptyList()
+    return identifiers
+      .map { id ->
+        repository.getEmailFromKeyId(id)
+          ?: run {
+            if (!repository.hasKey(id)) "\n${id}: ${getString(R.string.pgp_unknown_key_identifier)}"
+            else
+              "\n${id}: ${getString(R.string.password_creation_file_encryption_failed_expired_key)}"
+          }
+      }
+      .distinct()
+      .filter { it !in succeededRecipients.orEmpty() }
+  }
+
   protected fun requireEncryptionKeysExist(
     subDir: String,
     onKeysExist: (List<PGPIdentifier>) -> Unit,
   ) {
     val ids = getPGPIdentifiers(subDir)
     if (ids.isNullOrEmpty()) {
-      /* Store not initialised properly; open Key Manager in selection mode and
-       * let user choose one or multiple keys */
-      val (title, message) =
-        if (ids == null) {
-          // .gpg-id is missing
-          getString(R.string.missing_gpg_id_dialog_title) to
-            getString(R.string.missing_gpg_id_dialog_message)
-        } else {
-          // .gpg-id contains no or malformed PGP IDs
-          getString(R.string.invalid_gpg_id_dialog_title) to
-            getString(R.string.invalid_gpg_id_dialog_message)
-        }
-      openKeyManagerDialog(title, message) {
-        val intent = PGPKeyListActivity.newIntent(this@BasePGPActivity, keySelection = true)
-        intent.putExtra("SUB_PATH", subDir)
-        keySelectAction.launch(intent)
-      }
+      promptForGpgIdInitialisation(subDir, ids)
+    } else if (useOpenKeychain) {
+      // OpenKeychain decides which of its keys match; nothing to check locally.
+      onKeysExist(ids)
     } else {
       val idsWithKey = ids.filter { repository.hasKey(it) }
 
@@ -276,23 +427,10 @@ open class BasePGPActivity : AppCompatActivity() {
   ) {
     val ids = getPGPIdentifiers(subDir)
     if (ids.isNullOrEmpty()) {
-      /* Store not initialised properly; open Key Manager in selection mode and
-       * let user choose one or multiple keys */
-      val (title, message) =
-        if (ids == null) {
-          // .gpg-id is missing
-          getString(R.string.missing_gpg_id_dialog_title) to
-            getString(R.string.missing_gpg_id_dialog_message)
-        } else {
-          // .gpg-id contains no or malformed PGP IDs
-          getString(R.string.invalid_gpg_id_dialog_title) to
-            getString(R.string.invalid_gpg_id_dialog_message)
-        }
-      openKeyManagerDialog(title, message) {
-        val intent = PGPKeyListActivity.newIntent(this@BasePGPActivity, keySelection = true)
-        intent.putExtra("SUB_PATH", subDir)
-        keySelectAction.launch(intent)
-      }
+      promptForGpgIdInitialisation(subDir, ids)
+    } else if (useOpenKeychain) {
+      // OpenKeychain decides which of its keys match; nothing to check locally.
+      onKeysExist(ids)
     } else {
       val idsWithKey = ids.filter { repository.hasKey(it) }
       val idsWithDecryptionKey = idsWithKey.filter { repository.hasDecKey(it) }
@@ -626,6 +764,12 @@ open class BasePGPActivity : AppCompatActivity() {
   /* Find persistent PGP passphrases with matching key ID, unlock the first one
    * with biometrics or after PIN verification */
   protected fun getPersistentAndDecrypt(identifiers: List<PGPIdentifier>, action: String? = null) {
+    if (useOpenKeychain) {
+      // OpenKeychain has its own passphrase cache and handles hardware tokens itself.
+      decrypt(identifiers)
+      return
+    }
+
     // Detect AES key invalidation due to enrollment of a new fingerprint and emit warning
     if (
       BiometricAuthenticator.canAuthenticate(this@BasePGPActivity) &&
@@ -830,6 +974,13 @@ open class BasePGPActivity : AppCompatActivity() {
   }
 
   protected fun decrypt(identifiers: List<PGPIdentifier>, isError: Boolean = false) {
+    if (useOpenKeychain) {
+      // No passphrase handling on our side, OpenKeychain prompts the user as needed.
+      lifecycleScope.launch(dispatcherProvider.main()) {
+        decryptWithPassphrase(mapOf("" to null), identifiers)
+      }
+      return
+    }
     val passphrases = cachedPassphrases.filterKeys {
       identifiers.map { it.toString() }.contains(it)
     }

@@ -41,6 +41,8 @@ import app.passwordstore.ui.folderselect.SelectFolderActivity
 import app.passwordstore.ui.passwords.PasswordStore
 import app.passwordstore.util.autofill.AutofillPreferences
 import app.passwordstore.util.crypto.AESEncryption
+import app.passwordstore.util.crypto.OpenKeychainCancelledException
+import app.passwordstore.util.crypto.OpenKeychainException
 import app.passwordstore.util.extensions.asLog
 import app.passwordstore.util.extensions.base64
 import app.passwordstore.util.extensions.commitChange
@@ -572,31 +574,13 @@ class PasswordCreationActivity : BasePGPActivity() {
           contentChars.wipe()
 
           val (succeededUserEmails, result) =
-            withContext(dispatcherProvider.io()) {
-              repository.encrypt(
-                identifiers,
-                ByteArrayInputStream(contentBytes),
-                ByteArrayOutputStream(),
-              )
-            }
+            encryptMessage(identifiers, ByteArrayInputStream(contentBytes), ByteArrayOutputStream())
           contentBytes.wipe()
 
           if (result.isErr) throw result.unwrapError()
           if (succeededUserEmails.isNullOrEmpty()) throw UnusableKeyException
 
-          val failedUserEmails =
-            identifiers
-              .map { id ->
-                repository.getEmailFromKeyId(id)
-                  ?: run {
-                    if (!repository.hasKey(id))
-                      "\n${id}: ${getString(R.string.pgp_unknown_key_identifier)}"
-                    else
-                      "\n${id}: ${getString(R.string.password_creation_file_encryption_failed_expired_key)}"
-                  }
-              }
-              .distinct()
-              .filter { it !in succeededUserEmails ?: emptyList() }
+          val failedUserEmails = getFailedRecipients(identifiers, succeededUserEmails)
 
           val passwordFile = Paths.get(path)
           // If we're not editing, this file should not yet exist!
@@ -695,10 +679,16 @@ class PasswordCreationActivity : BasePGPActivity() {
         }
           .onErr { e ->
             logcat(ERROR) { e.asLog() }
+            if (e is OpenKeychainCancelledException) {
+              // The user backed out of an OpenKeychain prompt, let them retry from the form.
+              snackbar(message = getString(R.string.openkeychain_cancelled))
+              return@onErr
+            }
             setResult(RESULT_CANCELED)
             val errMessage =
               when (e) {
                 is IOException -> getString(R.string.password_creation_file_write_fail_message)
+                is OpenKeychainException -> getString(R.string.openkeychain_error, e.message ?: "")
                 is NoKeysProvidedException ->
                   getString(R.string.password_creation_no_keys_provided_message)
                 is UnusableKeyException ->

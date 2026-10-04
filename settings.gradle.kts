@@ -76,6 +76,8 @@ include("coroutine-utils")
 
 include("crypto:common")
 
+include("crypto:openpgp-ktx")
+
 include("crypto:pgpainless")
 
 include("format:common")

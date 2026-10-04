@@ -28,6 +28,8 @@ import app.passwordstore.util.credman.CALLER_UNKNOWN
 import app.passwordstore.util.credman.CALLER_WRONG_SIGNATURE
 import app.passwordstore.util.credman.CredmanUtils
 import app.passwordstore.util.credman.verifyCaller
+import app.passwordstore.util.crypto.OpenKeychainCancelledException
+import app.passwordstore.util.crypto.OpenKeychainException
 import app.passwordstore.util.extensions.base64
 import app.passwordstore.util.extensions.getString
 import app.passwordstore.util.extensions.snackbar
@@ -102,7 +104,7 @@ class PasskeyAuthenticationActivity : BasePGPActivity() {
     val encryptedFile = File(passkeyPath)
     val message = withContext(dispatcherProvider.io()) { encryptedFile.readBytes().inputStream() }
     val outputStream = ByteArrayOutputStream()
-    val results = repository.decrypt(passphrases, identifiers, message, outputStream)
+    val results = decryptMessage(passphrases, identifiers, message, outputStream)
     val lastResult = results.last()
     if (lastResult.second.isOk) {
       val decryptedEntryBytes = lastResult.second.getOrThrow().toByteArray()
@@ -269,6 +271,14 @@ class PasskeyAuthenticationActivity : BasePGPActivity() {
         snackbar(message = getString(R.string.password_decryption_no_decryption_key))
         val timer = Executors.newSingleThreadScheduledExecutor()
         timer.schedule({ finish() }, 4.toLong(), TimeUnit.SECONDS)
+      } else if (lastResult.second.getError() is OpenKeychainException) {
+        handleOpenKeychainError(lastResult.second.getError())
+        if (lastResult.second.getError() is OpenKeychainCancelledException) {
+          finish()
+        } else {
+          val timer = Executors.newSingleThreadScheduledExecutor()
+          timer.schedule({ finish() }, 4.toLong(), TimeUnit.SECONDS)
+        }
       } else {
         snackbar(message = getString(R.string.password_decryption_unknown_error))
         val timer = Executors.newSingleThreadScheduledExecutor()

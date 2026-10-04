@@ -165,6 +165,8 @@
   <string name="pref_import_pgp_key_title">Import PGP key</string>
   <string name="pref_pgp_key_manager_title">Key manager</string>
   <string name="pref_pgp_ascii_armor_title">Encrypt in ASCII armor mode</string>
+  <string name="pref_use_openkeychain_title">Use OpenKeychain</string>
+  <string name="pref_use_openkeychain_summary">Delegate PGP encryption and decryption to the OpenKeychain app instead of the built-in key manager. Required for hardware tokens such as YubiKeys.</string>
   <string name="pref_pgp_key_manager_export">Backup/Export</string>
   <string name="pref_pgp_key_manager_export_public">Export public key</string>
   <string name="pref_pgp_key_manager_change_passphrase">Change passphrase</string>
@@ -498,6 +500,21 @@
   <string name="invalid_gpg_id_dialog_message">The .gpg-id file found does not list any valid PGP key IDs. Reinitialise the .gpg-id file in the current folder by selecting one or more suitable PGP keys in the key manager.</string>
   <string name="missing_gpg_id_dialog_title">Missing .gpg-id file</string>
   <string name="missing_gpg_id_dialog_message">Initialise .gpg-id in the current folder by selecting one or more suitable PGP keys in the key manager.</string>
+
+  <!-- OpenKeychain integration -->
+  <string name="openkeychain_not_installed_title">OpenKeychain not installed</string>
+  <string name="openkeychain_not_installed_message">OpenKeychain is required for this feature, please install it from one of the stores below.</string>
+  <string name="openkeychain_not_installed_google_play" translatable="false">Google Play</string>
+  <string name="openkeychain_not_installed_fdroid" translatable="false">F-Droid</string>
+  <string name="play_deeplink_template" translatable="false">https://play.google.com/store/apps/details?id=%1$s</string>
+  <string name="fdroid_deeplink_template" translatable="false">https://f-droid.org/en/packages/%1$s/</string>
+  <string name="openkeychain_error">Error from OpenKeychain: %1$s</string>
+  <string name="openkeychain_cancelled">Operation cancelled in OpenKeychain</string>
+  <string name="openkeychain_select_keys">Select in OpenKeychain</string>
+  <string name="openkeychain_no_keys_selected">No PGP keys were selected in OpenKeychain</string>
+  <string name="missing_gpg_id_dialog_message_openkeychain">Initialise .gpg-id in the current folder by selecting one or more suitable PGP keys in OpenKeychain.</string>
+  <string name="invalid_gpg_id_dialog_message_openkeychain">The .gpg-id file found does not list any valid PGP key IDs. Reinitialise the .gpg-id file in the current folder by selecting one or more suitable PGP keys in OpenKeychain.</string>
+  <string name="gpg_key_select_openkeychain">Select key(s) in OpenKeychain</string>
 
   <!-- Passphrase input -->
   <string name="cache_password_until_screen_off">Keep passphrase until screen-off</string>
