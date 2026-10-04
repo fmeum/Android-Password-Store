@@ -25,6 +25,8 @@ import app.passwordstore.injection.prefs.PasswordHistory
 import app.passwordstore.ui.adapters.FieldItemAdapter
 import app.passwordstore.util.crypto.AESEncryption
 import app.passwordstore.util.crypto.AESEncryption.KeyType
+import app.passwordstore.util.crypto.OpenKeychainCancelledException
+import app.passwordstore.util.crypto.OpenKeychainException
 import app.passwordstore.util.extensions.base64
 import app.passwordstore.util.extensions.enableEdgeToEdgeView
 import app.passwordstore.util.extensions.getString
@@ -96,7 +98,7 @@ class DecryptActivity : BasePGPActivity() {
   ) {
     val message = withContext(dispatcherProvider.io()) { File(fullPath).readBytes().inputStream() }
     val outputStream = ByteArrayOutputStream()
-    val results = repository.decrypt(passphrases, identifiers, message, outputStream)
+    val results = decryptMessage(passphrases, identifiers, message, outputStream)
     val lastResult = results.last()
     if (lastResult.second.isOk) {
       val decryptedEntryBytes = lastResult.second.getOrThrow().toByteArray()
@@ -137,6 +139,9 @@ class DecryptActivity : BasePGPActivity() {
         results.filter { it.second.getError() is NoDecryptionKeyAvailableException }.any()
       ) {
         snackbar(message = resources.getString(R.string.password_decryption_no_decryption_key))
+      } else if (lastResult.second.getError() is OpenKeychainException) {
+        handleOpenKeychainError(lastResult.second.getError())
+        if (lastResult.second.getError() is OpenKeychainCancelledException) finish()
       } else {
         snackbar(message = resources.getString(R.string.password_decryption_unknown_error))
       }

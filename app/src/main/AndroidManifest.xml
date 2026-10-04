@@ -221,4 +221,9 @@
 
   </application>
 
+  <queries>
+    <!-- OpenKeychain, optionally used as the PGP backend -->
+    <package android:name="org.sufficientlysecure.keychain" />
+  </queries>
+
 </manifest>

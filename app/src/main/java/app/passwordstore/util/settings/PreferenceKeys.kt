@@ -111,6 +111,7 @@ object PreferenceKeys {
   const val DICEWARE_LENGTH = "diceware_length"
   const val DISABLE_SYNC_ACTION = "disable_sync_action"
   const val ASCII_ARMOR = "pgpainless_ascii_armor"
+  const val USE_OPENKEYCHAIN = "use_openkeychain"
 
   @Deprecated(
     message = "We refactored persistent caching of the PGP passphrase and this is no longer used"
